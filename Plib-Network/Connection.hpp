@@ -143,13 +143,34 @@ namespace Plib
 			typedef Socket< _TyConnect, _TyWrite, _TyRead >		Connector;
 			typedef __DELG< Request *(String) >					dGetRequest;
 			typedef std::pair< String, dGetRequest >			tPendingReq;
+			typedef Plib::Threading::Thread< void () >			tWorking;
+			typedef Plib::Generic::Queue< __REF<tWorking> >		tThreadQueue;
 
 		protected:
 			Plib::Generic::Queue< tPendingReq >					m_reqQueue;
-			Plib::Threading::RWLock								m_queueLocker;
+			Plib::Threading::Mutex								m_queueLocker;
 			Plib::Threading::Thread< void () >					m_waitThread;
 
 		protected:
+			tThreadQueue										m_workingQueue;
+			Plib::Threading::Semaphore 							m_workingSem;
+			Uint32												m_workingCount;
+			Uint32												m_workingMax;
+
+		protected:
+			__REF<tWorking> __threadCreater
+			{
+				__REF<tWorking> _rt;
+				//_rt->SetStackSize( 8M );
+				_rt->Jobs += std::make_pair( this, 
+					&Connection<_TyConnect, _TyWrite, _TyRead>::__thread_WorkingOnRequest);
+				return _rt;
+			}
+			// Working Threading
+			void __thread_WorkingOnRequest( )
+			{
+
+			}
 			// Global Threading
 			void __thread_WaitForNewRequest( )
 			{
@@ -158,9 +179,17 @@ namespace Plib
 				{
 					// Check
 					if ( !Plib::Threading::ThreadSys::Running() ) break;
+/*
+					// The the working thread
+					while ( !m_workingSem.Get(500) ) {
+						if ( !Plib::Threading::ThreadSys::Running() ) return;
+					}
 
+					tWorking t = m_workingQueue.Top();
+					m_workingQueue.Pop();
+*/
 					//PTRACE("Get a request.");
-					m_queueLocker.ReadLock();
+					m_queueLocker.Lock();
 					tPendingReq _pending = m_reqQueue.Head();
 					m_reqQueue.Pop();
 					m_queueLocker.UnLock();
@@ -214,7 +243,7 @@ namespace Plib
 				// Tell the working thread receive new connection request.
 
 				// RWLock
-				Plib::Threading::WriteLocker _lq( m_queueLocker );
+				Plib::Threading::Locker _lq( m_queueLocker );
 				// PushBack(_get)
 				this->m_reqQueue.Push( _pending );
 				// ReleaseSemaphore
