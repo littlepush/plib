@@ -86,6 +86,7 @@ namespace Plib
 			bool operator == ( const PeerInfo & rhs ) const
 			{
 				if ( this == &rhs ) return true;
+				return false;
 			}
 		};
 

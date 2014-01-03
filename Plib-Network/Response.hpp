@@ -24,9 +24,10 @@ namespace Plib
 	namespace Network
 	{
 
-		class Response
+		class IResponse
 		{
 		public:
+            virtual ~IResponse() {}
 			virtual void generateResponseObjectFromPackage( NData & receiveData ) = 0;
 		};
 	}

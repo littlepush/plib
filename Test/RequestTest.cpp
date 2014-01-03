@@ -17,38 +17,78 @@ using namespace Plib::Network;
 using namespace Plib::Utility;
 using namespace std;
 
-class NcRequest : public Request
+class NcResponse : public IResponse
 {
 public:
+	virtual void generateResponseObjectFromPackage( NData & receiveData )
+	{
 
-	typedef NcRequest		TResp;
-
+	}
+};
+class NcRequest : public IRequest
+{
+public:
+	// C'str, set the time out
 	NcRequest( ) 
 	{
 		m_peerInfo.ConnectTimeOut = 30000;
 	}
-
-	NcRequest( const String & address, Uint32 port ) : Request( address, port )
+	NcRequest( const String & address, Uint32 port ) : IRequest( address, port )
 	{
 		m_peerInfo.ConnectTimeOut = 30000;
 	}
-
-	~NcRequest() {}
+	virtual ~NcRequest() {
+		// Should release the memory alloced in initialize.
+		this->DestroyResponser();
+		this->DestroyConnector();
+	}
 
 	void SetConnectInfo( const String & address, Uint32 port )
 	{
 		m_peerInfo.Address.DeepCopy( address );
 		m_peerInfo.Port = port;
 	}
-
 	void AppendBody( const String & body )
 	{
 		m_packageBuffer.Append( body );
 	}
-
 	const NData & generateFullPackage( )
 	{
 		return m_packageBuffer;
+	}
+
+	// Initialize methods
+	virtual bool InitializeConnector() {
+		if ( this->m_socket == NULL ) {
+			this->m_socket = new TcpSocket();
+		}
+		if ( this->m_socket->isConnected() == false ) {
+			this->m_socket->Connect( this->m_peerInfo );
+		}
+		if ( this->m_socket->isConnected() == false ) {
+			this->DestroyConnector();
+			return false;
+		}
+		return true;
+	}
+	void DestroyConnector() {
+		if ( this->m_socket != NULL ) {
+			this->m_socket->Close();
+			delete this->m_socket;
+			this->m_socket = NULL;
+		}
+	}
+	virtual bool InitializeResponser() {
+		if ( this->m_response == NULL ) {
+			this->m_response = new NcResponse();
+		}
+		return this->m_response != NULL;
+	}
+	void DestroyResponser() {
+		if ( this->m_response != NULL ) {
+			delete this->m_response;
+			this->m_response = NULL;
+		}
 	}
 };
 
@@ -56,7 +96,7 @@ int main ( int argc, char * argv[] )
 {
 	Plib::Threading::SetSignalHandle();
 
-	String _string = "GET /indexp.php HTTP/1.1\r\nHOST : pushchen.com\r\n\r\n";
+	String _string = "GET /index.html HTTP/1.1\r\nHOST : pushchen.com\r\n\r\n";
 	//cout << _string << endl;
 	PINFO( Plib::Network::LocalHostname() );
 	PINFO( Identify::New() );
@@ -77,7 +117,7 @@ int main ( int argc, char * argv[] )
 	Reference< NcRequest > _req;
 	_req->SetConnectInfo( "pushchen.com", 80 );
 	_req->AppendBody( _string );
-	TcpConnection::Async( _req );
+	Connection::sendAsyncRequest( &(*_req) );
 
 	// PeerInfo remotePeer;
 	// remotePeer.Address = "127.0.0.1";
