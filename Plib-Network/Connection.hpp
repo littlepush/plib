@@ -32,194 +32,134 @@ namespace Plib
 		#define __REF			Plib::Generic::Reference
 		#define __DELG			Plib::Generic::Delegate
 		using Plib::Text::String;
+		using Plib::Threading::Mutex;
+		using Plib::Threading::Semaphore;
 
-		// Default delegate object
-		template < typename _TyReq >
-		class DefaultSuccessCallBack
+		// Typedef
+		typedef Plib::Generic::Delegate< void ( IRequest * ) > tReqSuccess;
+		typedef Plib::Generic::Delegate< void ( IRequest *, String ) > tReqFailed;
+
+		typedef Plib::Threading::Thread< void () >	tReqWorker;
+		typedef Plib::Generic::Reference< tReqWorker > refWorker;
+
+		class RequestSuccessCallback
 		{
 		public:
-			void operator() (__REF<_TyReq> request, __REF<typename _TyReq::TResp> response) const
+			// Just output the log with level info.
+			void operator() ( IRequest *req ) const
 			{
-				PINFO( "[Request: " << request->Identify << 
-					"] Successed." );
+				PINFO( "[Request: " << req->Identify << "] Successed.");
+			}
+
+			operator tReqSuccess ()
+			{
+				tReqSuccess _delegate( *this );
+				return _delegate;
 			}
 		};
 
-		template < typename _TyReq >
-		class DefaultFailedCallBack
+		class RequestFailedCallback
 		{
 		public:
-			void operator() ( __REF<_TyReq> request, String errorInfo ) const
+			// Just output the log with level error.
+			void operator() ( IRequest *req, String errorMsg) const
 			{
-				PERROR( "[Request: " << request->Identify << 
-					"] Failed, Error Info: <" << errorInfo << ">." );
+				PERROR( "[Request: " << req->Identify << 
+					"] Failed, Error Info: <" << errorMsg << ">." );
+			}
+
+			operator tReqFailed ()
+			{
+				tReqFailed _delegate( *this );
+				return _delegate;
 			}
 		};
-
-		template < typename _TyReq >
-		struct RequestContext
-		{
-			typedef typename _TyReq::TResp 					_TyResp;
-			typedef __REF<_TyReq>							_tRequest;
-			typedef __REF<_TyResp>							_tResponse;
-			typedef __DELG<void(_tRequest, _tResponse)>		_tSuccess;
-			typedef __DELG<void(_tRequest, String)>			_tFailed;
-
-			_tRequest				request;
-			_tSuccess 				success;
-			_tFailed 				failed;
-
-			// Constructure
-			RequestContext<_TyReq>( ){ }
-			RequestContext<_TyReq>( _tRequest r, _tSuccess s, _tFailed f ) 
-				: request( r ), success( s ), failed( f ) { }
-			RequestContext<_TyReq>( const RequestContext<_TyReq> & rhs )
-				: request( rhs.request ), success( rhs.success ), failed( rhs.failed )
-			{
-			}
-		};
-
-		// Object Cache
-		template < typename _TyReq >
-		class ConnectionRequestCache
-		{
-		protected:
-
-			typedef std::map< String, RequestContext< _TyReq > >	TCache;
-			typedef typename TCache::iterator						ICache;
-
-			// Cache Core
-			std::map< String, RequestContext< _TyReq > >			mCache;
-
-			//static PLIB_THREAD_SAFE_DEFINE;
-			static Plib::SpinLocker 								_locker;
-
-			// For Singleton usage constructure
-			ConnectionRequestCache( ) { }
-
-			static ConnectionRequestCache<_TyReq> & self( )
-			{
-				static ConnectionRequestCache _self;
-				return _self;
-			}
-		public:
-
-			static void AddRequestContext( RequestContext<_TyReq> & context )
-			{
-				SPINLOCK(_locker);
-				// set value
-				self().mCache[context.request->Identify] = context;
-			}
-
-			static Request * GetRequestByIdentify( String identify )
-			{
-				SPINLOCK(_locker);
-				ICache _context = self().mCache.find( identify );
-				if ( _context == self().mCache.end() ) return NULL;
-				return (Request *)&(*(_context->second.request));
-			}
-
-			static void RemoveRequestByIdentify( String identify )
-			{
-				SPINLOCK(_locker);
-				ICache _context = self().mCache.find( identify );
-				if ( _context == self().mCache.end() ) return;
-				self().mCache.erase( _context );
-			}
-		};
-
-		template < typename _TyReq >
-		SpinLocker ConnectionRequestCache< _TyReq >::_locker;
 
 		//class TcpConnectCreator
-
-		template < 
-			typename _TyConnect = TcpSocketConnect, 		// Function object to connect to peer
-			typename _TyWrite = TcpSocketWrite, 			// Function object to write data
-			typename _TyRead = TcpSocketRead 				// Function object to read data
-		>
 		class Connection
 		{
-			typedef Socket< _TyConnect, _TyWrite, _TyRead >		Connector;
-			typedef __DELG< Request *(String) >					dGetRequest;
-			typedef std::pair< String, dGetRequest >			tPendingReq;
-			typedef Plib::Threading::Thread< void () >			tWorking;
-			typedef Plib::Generic::Queue< __REF<tWorking> >		tThreadQueue;
+		protected:
+			Plib::Generic::Queue< IRequest * >			m_pendingQueue;
+			Plib::Generic::Queue< IRequest * >			m_idleQueue;
+			Plib::Generic::Queue< IRequest * >			m_fetchingQueue;
+			Semaphore									m_pendingSem;
+			Semaphore									m_idleSem;
+			Semaphore									m_fetchingSem;
+			Mutex										m_pendingMutex;
+			Mutex 										m_idleMutex;
+			Mutex 										m_fetchingMutex;
+
+			Plib::Generic::Array< refWorker >			m_fetchingWorkerList;
+			Plib::Generic::Array< refWorker >			m_postingWorkingList;
 
 		protected:
-			Plib::Generic::Queue< tPendingReq >					m_reqQueue;
-			Plib::Threading::Mutex								m_queueLocker;
-			Plib::Threading::Thread< void () >					m_waitThread;
+			Uint32										m_maxPostingWorkingCount;
+			Uint32										m_maxFetchingWorkingCount;
 
 		protected:
-			tThreadQueue										m_workingQueue;
-			Plib::Threading::Semaphore 							m_workingSem;
-			Uint32												m_workingCount;
-			Uint32												m_workingMax;
-
-		protected:
-			__REF<tWorking> __threadCreater
+			refWorker __fetcherCreater()
 			{
-				__REF<tWorking> _rt;
-				//_rt->SetStackSize( 8M );
-				_rt->Jobs += std::make_pair( this, 
-					&Connection<_TyConnect, _TyWrite, _TyRead>::__thread_WorkingOnRequest);
-				return _rt;
+				refWorker _refWorker;
+				_refWorker->Jobs += std::make_pair( this, 
+					&Connection::__thread_ReceiveResponse);
+				// Start the thread automatically.
+				_refWorker->Start();
+				return _refWorker;
 			}
-			// Working Threading
-			void __thread_WorkingOnRequest( )
+			refWorker __posterCreater()
 			{
-
+				refWorker _refWorker;
+				_refWorker->Jobs += std::make_pair( this,
+					&Connection::__thread_SendRequest);
+				// Start the thread automatically.
+				_refWorker->Start();
+				return _refWorker;
 			}
-			// Global Threading
-			void __thread_WaitForNewRequest( )
+
+			void __thread_ReceiveResponse( )
 			{
-				//PTRACE("Thread Started");
-				while ( Plib::Threading::ThreadSys::WaitForSignal() )
-				{
-					// Check
-					if ( !Plib::Threading::ThreadSys::Running() ) break;
-/*
-					// The the working thread
-					while ( !m_workingSem.Get(500) ) {
-						if ( !Plib::Threading::ThreadSys::Running() ) return;
-					}
-
-					tWorking t = m_workingQueue.Top();
-					m_workingQueue.Pop();
-*/
-					//PTRACE("Get a request.");
-					m_queueLocker.Lock();
-					tPendingReq _pending = m_reqQueue.Head();
-					m_reqQueue.Pop();
-					m_queueLocker.UnLock();
-
-					//Request *_req = _get()
-					PTRACE( "Get Request: " << _pending.first );
-					Request *_req = _pending.second(_pending.first);
-					PeerInfo _peerInfo = _req->RequestPeerInfo();
-					PTRACE( "Request to " << _peerInfo );
-
-					Connector _conn;
-					if ( _conn.Connect(_peerInfo) ){
-						_conn.Write(_req->generateFullPackage());
-					}
+				while ( Plib::Threading::ThreadSys::Running() ) {
+					// Fetch a sent request from queue
+					// Wait for the response data
+					// Generate the response object
+					// Tell the delegate to call back
+					// If the request is set keepAlive
+					// move the request to the idle list
+				}
+			}
+			void __thread_SendRequest( )
+			{
+				while ( Plib::Threading::ThreadSys::Running() ) {
+					// Fetch a pending request
+					// check if the request's socket has been connected
+					// send the package
+					// move the request to the fetch list
 				}
 			}
 
 		protected:
 
 			// Singleton Constructure
-			Connection< _TyConnect, _TyWrite, _TyRead >( ) 
+			Connection( ):  m_maxPostingWorkingCount(1), m_maxFetchingWorkingCount(1)
 			{
-				m_waitThread.Jobs += std::make_pair( this, 
-					&Connection<_TyConnect, _TyWrite, _TyRead>::__thread_WaitForNewRequest );
-				m_waitThread.Start();
+				// Create the initialized posting worker
+				refWorker _posterWorker = this->__posterCreater();
+				m_postingWorkingList.PushBack(_posterWorker);
+
+				// Create the first fetching worker
+				refWorker _fetcherWorker = this->__fetcherCreater();
+				m_fetchingWorkerList.PushBack(_fetcherWorker);
 			}
 
-			~Connection< _TyConnect, _TyWrite, _TyRead >( )
+			~Connection( )
 			{
-				m_waitThread.Stop( true );
+				// Close all worker
+				for ( int i = 0; i < m_postingWorkingList.Size(); ++i ) {
+					m_postingWorkingList[i]->Stop(true);
+				}
+				for ( int i = 0; i < m_fetchingWorkerList.Size(); ++i ) {
+					m_fetchingWorkerList[i]->Stop(true);
+				}
 			}
 
 			// Singleton Object
@@ -227,72 +167,17 @@ namespace Plib
 				static Connection _self;
 				return _self;
 			}
-
-			template < typename _TyReq >
-			void receiveNewRequest( __REF<_TyReq> request, 
-				__DELG<void(__REF<_TyReq>, __REF<typename _TyReq::TResp>)> & onSuccess, 
-				__DELG<void(__REF<_TyReq>, String)> & onFailed )
-			{
-				// Generate Context and callback delegate
-				RequestContext<_TyReq> context(request, onSuccess, onFailed);
-				dGetRequest _get(&ConnectionRequestCache<_TyReq>::GetRequestByIdentify);
-				tPendingReq _pending(request->Identify, _get);
-				// Add Context to the cache
-				ConnectionRequestCache< _TyReq >::AddRequestContext( context );
-
-				// Tell the working thread receive new connection request.
-
-				// RWLock
-				Plib::Threading::Locker _lq( m_queueLocker );
-				// PushBack(_get)
-				this->m_reqQueue.Push( _pending );
-				// ReleaseSemaphore
-				//this->m_queueSem.Release( );
-				this->m_waitThread.GiveSignal();
-			}
-
 		public:
-			template < typename _TyReq >
-			static void Async( __REF<_TyReq> request, 
-				__DELG<void(__REF<_TyReq>, __REF<typename _TyReq::TResp>)> onSuccess, 
-				__DELG<void(__REF<_TyReq>, String)> onFailed )
+			// Async Sending Request
+			static void sendAsyncRequest( 
+				IRequest * req, 
+				tReqSuccess success = RequestSuccessCallback(),
+				tReqFailed failed = RequestFailedCallback()
+				)
 			{
-				if ( request->Identify.Size() == 0 ) {
-					request->SetIdentify( Plib::Utility::Identify::New() );
-				}
-				self().receiveNewRequest(request, onSuccess, onFailed);
-			}
 
-			template < typename _TyReq >
-			static void Async( __REF<_TyReq> request, 
-				__DELG<void(__REF<_TyReq>, __REF<typename _TyReq::TResp>)> onSuccess)
-			{
-				if ( request->Identify.Size() == 0 ) {
-					request->SetIdentify( Plib::Utility::Identify::New() );
-				}
-				DefaultFailedCallBack<_TyReq> _defaultFailed;
-				__DELG< void(__REF<_TyReq>, String) > _onFailed(_defaultFailed);
-				self().receiveNewRequest(request, onSuccess, _onFailed);
-			}
-
-			template < typename _TyReq >
-			static void Async( __REF<_TyReq> request )
-			{
-				if ( request->Identify.Size() == 0 ) {
-					request->SetIdentify( Plib::Utility::Identify::New() );
-				}
-
-				DefaultSuccessCallBack<_TyReq> _defaultSuccess;
-				__DELG< void(__REF<_TyReq>, __REF<typename _TyReq::TResp>) > _onSuccess(_defaultSuccess);
-
-				DefaultFailedCallBack<_TyReq> _defaultFailed;
-				__DELG< void(__REF<_TyReq>, String) > _onFailed(_defaultFailed);
-
-				self().receiveNewRequest(request, _onSuccess, _onFailed);
 			}
 		};
-
-		typedef Connection< >		TcpConnection;
 	}
 }
 

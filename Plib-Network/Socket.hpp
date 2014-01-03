@@ -22,6 +22,60 @@ namespace Plib
 {
 	namespace Network
 	{
+		// The socket interface
+		struct ISocket
+		{
+			// The socket handler
+			SOCKET_T						m_hSocket;
+
+			virtual ~ISocket() {}
+
+			// Get Local & Remote Port Info
+			virtual const PeerInfo & RemotePeerInfo( ) const = 0;
+			virtual Uint32 LocalPort( ) const = 0;
+
+			// Basic method: Connect
+			// Connect to peer according to the PeerInfo
+			virtual bool Connect( const PeerInfo & peerInfo ) = 0;
+
+			// Write data
+			virtual int Write( const NData & data, Uint32 timeout = 1000 ) = 0;
+			// Read data
+			virtual NData Read( 
+				Uint32 timeout = 1000, 
+				bool waitUntilTimeout = false, 
+				int idleLoopCount = 5 ) = 0;
+
+			// Close the connection of the socket
+			void Close( )
+			{
+				if ( SOCKET_NOT_VALIDATE(m_hSocket) ) return;
+				PLIB_NETWORK_CLOSESOCK(m_hSocket);
+				m_hSocket = INVALIDATE_SOCKET;
+			}
+
+			// Socket status
+			bool isReadable( ) const
+			{
+				if ( m_hSocket == INVALIDATE_SOCKET ) return false;
+				HSOCKETSTATUE _result = TcpSocketStatus()(m_hSocket, HSO_CHECK_READ);
+				return _result == HSO_OK;
+			}
+
+			bool isWriteable( ) const 
+			{
+				if ( m_hSocket == INVALIDATE_SOCKET ) return false;
+				HSOCKETSTATUE _result = TcpSocketStatus()(m_hSocket, HSO_CHECK_WRITE);
+				return _result == HSO_OK;
+			}
+
+			bool isConnected( ) const
+			{
+				if ( m_hSocket == INVALIDATE_SOCKET ) return false;
+				HSOCKETSTATUE _result = TcpSocketStatus()(m_hSocket, HSO_CHECK_CONNECT);
+				return _result != HSO_INVALIDATE;
+			}
+		};
 
 		// Socket Framework
 		// In All Default setting, we make the Socket to be a TCP Socket
@@ -32,7 +86,7 @@ namespace Plib
 			typename _TyWrite = TcpSocketWrite, 			// Function object to write data
 			typename _TyRead = TcpSocketRead 				// Function object to read data
 		>
-		class Socket
+		class Socket : public ISocket
 		{
 		protected:
 			Plib::Threading::StopWatch		idleTimer;
@@ -59,8 +113,8 @@ namespace Plib
 			}
 		public:
 			// Properties
-			const PeerInfo & RemotePeerInfo( ) const { return m_remoteInfo; }
-			Uint32 LocalPort( ) const { return m_localPort; }
+			virtual const PeerInfo & RemotePeerInfo( ) const { return m_remoteInfo; }
+			virtual Uint32 LocalPort( ) const { return m_localPort; }
 
 		public:
 			// Structure
@@ -71,13 +125,13 @@ namespace Plib
 				this->_getSocketInfo( );
 				idleTimer.SetStart();
 			}
-			~Socket< _TyConnect, _TyWrite, _TyRead > ()
+			virtual ~Socket< _TyConnect, _TyWrite, _TyRead > ()
 			{
 				this->Close();
 			}
 
 			// Kernal Functions
-			bool Connect( const PeerInfo & peerInfo )
+			virtual bool Connect( const PeerInfo & peerInfo )
 			{
 				if ( !SOCKET_NOT_VALIDATE(m_hSocket) ) this->Close( );
 				m_hSocket = _TyConnect()(peerInfo);
@@ -89,7 +143,7 @@ namespace Plib
 				return !SOCKET_NOT_VALIDATE(m_hSocket);
 			}
 
-			int Write( const NData & data, Uint32 timeout = 1000 )
+			virtual int Write( const NData & data, Uint32 timeout = 1000 )
 			{
 				int _ret = _TyWrite()(m_hSocket, data, timeout);
 				idleTimer.SetStart();
@@ -97,19 +151,12 @@ namespace Plib
 				return _ret;
 			}
 
-			NData Read( Uint32 timeout = 1000, bool waitUntilTimeout = false, int idleLoopCount = _TyRead::IdleLoopCount )
+			virtual NData Read( Uint32 timeout = 1000, bool waitUntilTimeout = false, int idleLoopCount = _TyRead::IdleLoopCount )
 			{
 				NData _buffer = _TyRead()(m_hSocket, timeout, waitUntilTimeout, idleLoopCount);
 				idleTimer.SetStart();
 				if ( _buffer.RefNull() ) this->Close();
 				return _buffer;
-			}
-
-			void Close( )
-			{
-				if ( SOCKET_NOT_VALIDATE(m_hSocket) ) return;
-				PLIB_NETWORK_CLOSESOCK(m_hSocket);
-				m_hSocket = INVALIDATE_SOCKET;
 			}
 
 			// Properties
@@ -118,27 +165,6 @@ namespace Plib
 				if ( SOCKET_NOT_VALIDATE(m_hSocket) ) return 0.f;
 				idleTimer.Tick();
 				return idleTimer.GetMileSecUsed();
-			}
-
-			bool isReadable( ) const
-			{
-				HSOCKETSTATUE _result = TcpSocketStatus()(m_hSocket, HSO_CHECK_READ);
-				if ( _result == HSO_INVALIDATE ) this->Close();
-				return _result == HSO_OK;
-			}
-
-			bool isWriteable( ) const 
-			{
-				HSOCKETSTATUE _result = TcpSocketStatus()(m_hSocket, HSO_CHECK_WRITE);
-				if ( _result == HSO_INVALIDATE ) this->Close();
-				return _result == HSO_OK;
-			}
-
-			bool isConnected( ) const
-			{
-				HSOCKETSTATUE _result = TcpSocketStatus()(m_hSocket, HSO_CHECK_CONNECT);
-				if ( _result == HSO_INVALIDATE ) this->Close();
-				return _result != HSO_INVALIDATE;
 			}
 
 			bool SetReUsable( bool beReused = true )
